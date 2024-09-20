@@ -457,6 +457,9 @@ static bool checkVMA(const typename ELFT::Phdr &Phdr,
   return false;
 }
 
+// 标记GNU RELRO 类型的Section
+// 先判断二进制是否存在PT_GNU_RELRO类型的Segment，然后遍历各个section，标记包含在这个
+// segment中的section
 void RewriteInstance::markGnuRelroSections() {
   using ELFT = ELF64LE;
   using ELFShdrTy = typename ELFObjectFile<ELFT>::Elf_Shdr;
@@ -500,17 +503,21 @@ void RewriteInstance::markGnuRelroSections() {
         handleSection(Phdr, SecRef);
 }
 
+// discoverStorage用来确定优化后新的段放置的地址和文件中的位置
+// 在标准的ELF文件中，程序段表应该是放在程序头后面的，但是BOLT会将新的程序头放在原始二进制
+// 文件的Segment之后（因为前面放不开）。但是为了满足某些加载器的特殊处理要求（这里不太懂），
+// 不得不使 新PHDR的偏移 == 新PHDR的地址 - 旧.text段的地址，所以会有额外的空间开销。
 Error RewriteInstance::discoverStorage() {
   NamedRegionTimer T("discoverStorage", "discover storage", TimerGroupName,
                      TimerGroupDesc, opts::TimeRewrite);
-
+  // 构造函数中已经检查过一定为64位ELF
   auto ELF64LEFile = cast<ELF64LEObjectFile>(InputFile);
   const ELFFile<ELF64LE> &Obj = ELF64LEFile->getELFFile();
 
   BC->StartFunctionAddress = Obj.getHeader().e_entry;
 
-  NextAvailableAddress = 0;
-  uint64_t NextAvailableOffset = 0;
+  NextAvailableAddress = 0;   // 下一个可用的虚拟地址，BOLT不覆盖原二进制
+  uint64_t NextAvailableOffset = 0; // 二进制文件中下一个可用的位置
   Expected<ELF64LE::PhdrRange> PHsOrErr = Obj.program_headers();
   if (Error E = PHsOrErr.takeError())
     return E;
@@ -547,7 +554,7 @@ Error RewriteInstance::discoverStorage() {
     if (Error E = SectionNameOrErr.takeError())
       return E;
     StringRef SectionName = SectionNameOrErr.get();
-    if (SectionName == BC->getMainCodeSectionName()) {
+    if (SectionName == BC->getMainCodeSectionName()) { // 为.text节
       BC->OldTextSectionAddress = Section.getAddress();
       BC->OldTextSectionSize = Section.getSize();
 
@@ -556,7 +563,7 @@ Error RewriteInstance::discoverStorage() {
         return E;
       StringRef SectionContents = SectionContentsOrErr.get();
       BC->OldTextSectionOffset =
-          SectionContents.data() - InputFile->getData().data();
+          SectionContents.data() - InputFile->getData().data(); // 为什么通过这种方式获取Offset，Section信息里应该会有
     }
 
     if (!opts::HeatmapMode &&
@@ -578,6 +585,7 @@ Error RewriteInstance::discoverStorage() {
   FirstNonAllocatableOffset = NextAvailableOffset;
 
   NextAvailableAddress = alignTo(NextAvailableAddress, BC->PageAlign);
+  // 为什么文件也要按照大页进行对齐？
   NextAvailableOffset = alignTo(NextAvailableOffset, BC->PageAlign);
 
   // Hugify: Additional huge page from left side due to
@@ -601,6 +609,7 @@ Error RewriteInstance::discoverStorage() {
     else
       NextAvailableAddress = NextAvailableOffset + BC->FirstAllocAddress;
 
+    // 在开启大页时会有额外的空间开销
     assert(NextAvailableOffset ==
                NextAvailableAddress - BC->FirstAllocAddress &&
            "PHDR table address calculation error");
@@ -723,6 +732,8 @@ Error RewriteInstance::run() {
   return Error::success();
 }
 
+// discoverFileObjects主要根据符号表，生成BinaryFunction对象并添加到BC，包括确定函数的
+// 入口和边界，Symbol mapping处理等等。
 void RewriteInstance::discoverFileObjects() {
   NamedRegionTimer T("discoverFileObjects", "discover file objects",
                      TimerGroupName, TimerGroupDesc, opts::TimeRewrite);
@@ -767,6 +778,7 @@ void RewriteInstance::discoverFileObjects() {
       SeenFileName = true;
       continue;
     }
+    // 文件内的符号一定排在文件名之后？
     if (!FileSymbolName.empty() &&
         !(cantFail(Symbol.getFlags()) & SymbolRef::SF_Global))
       SymbolToFileName[Symbol] = FileSymbolName;
@@ -845,6 +857,7 @@ void RewriteInstance::discoverFileObjects() {
         continue;
       }
 
+      // $d后面所有出现的地址都会被认为是数据，直到遇到$x
       if (IsData) {
         SortedMarkerSymbols.push_back({SymInfo.Address, MarkerSymType::DATA});
         LastAddr = SymInfo.Address;
@@ -1868,6 +1881,8 @@ void RewriteInstance::relocateEHFrameSection() {
   check_error(std::move(E), "failed to patch EH frame");
 }
 
+// readSpecialSections主要是对一些section处理，将section注册到BC，探测是否存在重定位段，
+// 调试信息等，并注册一些MetadataRewriter对section的元数据进行处理
 Error RewriteInstance::readSpecialSections() {
   NamedRegionTimer T("readSpecialSections", "read special sections",
                      TimerGroupName, TimerGroupDesc, opts::TimeRewrite);
@@ -1963,12 +1978,14 @@ Error RewriteInstance::readSpecialSections() {
     report_error("expected valid eh_frame section", EHFrameOrError.takeError());
   CFIRdWrt.reset(new CFIReaderWriter(*BC, *EHFrameOrError.get()));
 
+  // 注册一些MetadataRewriter，并对section的元数据进行处理
   processSectionMetadata();
 
   // Read .dynamic/PT_DYNAMIC.
   return readELFDynamic();
 }
 
+// adjustCommandLineOptions主要对一些不兼容和不合法的选项进行调整
 void RewriteInstance::adjustCommandLineOptions() {
   if (BC->isAArch64() && !BC->HasRelocations)
     BC->errs() << "BOLT-WARNING: non-relocation mode for AArch64 is not fully "
@@ -3096,6 +3113,8 @@ void RewriteInstance::readDebugInfo() {
   BC->preprocessDebugInfo();
 }
 
+// 预处理profile，对profile文件进行解析，生成相应的FuncBranchData，FuncSimpleData以及
+// FuncMemData.
 void RewriteInstance::preprocessProfileData() {
   if (!ProfileReader)
     return;

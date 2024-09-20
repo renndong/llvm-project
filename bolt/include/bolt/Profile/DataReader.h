@@ -109,8 +109,8 @@ struct FuncBranchData {
   typedef std::vector<BranchInfo> ContainerTy;
 
   StringRef Name;
-  ContainerTy Data;
-  ContainerTy EntryData;
+  ContainerTy Data;  // 作为起点的BranchInfo
+  ContainerTy EntryData; // 作为终点的BranchInfo
 
   /// Total execution count for the function.
   int64_t ExecutionCount{0};
