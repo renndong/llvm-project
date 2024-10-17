@@ -1057,6 +1057,7 @@ bool TargetPassConfig::addCoreISelPasses() {
   return false;
 }
 
+// 添加指令选择的Pass，包括指令选择预处理（return前的语句），指令选择Pass，指令选择后处理Pass
 bool TargetPassConfig::addISelPasses() {
   if (TM->useEmulatedTLS())
     addPass(createLowerEmuTLSPass());

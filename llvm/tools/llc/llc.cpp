@@ -660,6 +660,7 @@ static int compileModule(char **argv, LLVMContext &Context) {
   else if (VerifyEach)
     VK = VerifierKind::EachPass;
 
+  // 使用新Pass Manager编译
   if (EnableNewPassManager || !PassPipeline.empty()) {
     return compileModuleWithNewPM(argv[0], std::move(M), std::move(MIR),
                                   std::move(Target), std::move(Out),

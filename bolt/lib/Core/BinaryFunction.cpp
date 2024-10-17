@@ -1297,7 +1297,7 @@ Error BinaryFunction::disassemble() {
     // Check integrity of LLVM assembler/disassembler.
     if (opts::CheckEncoding && !BC.MIB->isBranch(Instruction) &&
         !BC.MIB->isCall(Instruction) && !BC.MIB->isNoop(Instruction)) {
-      if (!BC.validateInstructionEncoding(FunctionData.slice(Offset, Size))) {
+      if (!BC.validateInstructionEncoding(FunctionData.slice(Offset, Size))) { // 完整性检查，为什么要做这个？
         BC.errs() << "BOLT-WARNING: mismatching LLVM encoding detected in "
                   << "function " << *this << " for instruction :\n";
         BC.printInstruction(BC.errs(), Instruction, AbsoluteInstrAddr);
@@ -1353,7 +1353,7 @@ Error BinaryFunction::disassemble() {
 
         if (!TargetSymbol) {
           // Create either local label or external symbol.
-          if (containsAddress(TargetAddress)) {
+          if (containsAddress(TargetAddress)) { // 位于函数自身内部
             TargetSymbol = getOrCreateLocalLabel(TargetAddress);
           } else {
             if (TargetAddress == getAddress() + getSize() &&
@@ -1548,7 +1548,7 @@ bool BinaryFunction::scanExternalRefs() {
   uint64_t Size = 0; // instruction size
   for (uint64_t Offset = 0; Offset < getSize(); Offset += Size) {
     // Check for data inside code and ignore it
-    if (const size_t DataInCodeSize = getSizeOfDataInCodeAt(Offset)) {
+    if (const size_t DataInCodeSize = getSizeOfDataInCodeAt(Offset)) {  // 跳过数据区域
       Size = DataInCodeSize;
       continue;
     }
@@ -1558,7 +1558,7 @@ bool BinaryFunction::scanExternalRefs() {
     if (!BC.SymbolicDisAsm->getInstruction(Instruction, Size,
                                            FunctionData.slice(Offset),
                                            AbsoluteInstrAddr, nulls())) {
-      if (opts::Verbosity >= 1 && !isZeroPaddingAt(Offset)) {
+      if (opts::Verbosity >= 1 && !isZeroPaddingAt(Offset)) {  // 如果不是零填充的区域
         BC.errs()
             << "BOLT-WARNING: unable to disassemble instruction at offset 0x"
             << Twine::utohexstr(Offset) << " (address 0x"
@@ -1651,14 +1651,14 @@ bool BinaryFunction::scanExternalRefs() {
       if (ignoreReference(Rel->Symbol))
         continue;
 
-      if (Relocation::getSizeForType(Rel->Type) < 4) {
+      if (Relocation::getSizeForType(Rel->Type) < 4) {  //
         // If the instruction uses a short form, then we might not be able
         // to handle the rewrite without relaxation, and hence cannot reliably
         // create an external reference relocation.
         Success = false;
         continue;
       }
-      Rel->Offset += getAddress() - getOriginSection()->getAddress() + Offset;
+      Rel->Offset += getAddress() - getOriginSection()->getAddress() + Offset; // 为什么是Rel->Offset加上而不是等于
       FunctionRelocations.push_back(*Rel);
     }
 
@@ -1672,11 +1672,11 @@ bool BinaryFunction::scanExternalRefs() {
   // Add relocations unless disassembly failed for this function.
   if (!DisassemblyFailed)
     for (Relocation &Rel : FunctionRelocations)
-      getOriginSection()->addPendingRelocation(Rel);
+      getOriginSection()->addPendingRelocation(Rel); // 添加重定位信息到当前段
 
   // Inform BinaryContext that this function symbols will not be defined and
   // relocations should not be created against them.
-  if (BC.HasRelocations) {
+  if (BC.HasRelocations) {  // 为什么要将这些符号认为是未定义的？
     for (std::pair<const uint32_t, MCSymbol *> &LI : Labels)
       BC.UndefinedSymbols.insert(LI.second);
     for (MCSymbol *const EndLabel : FunctionEndLabels)
@@ -1684,7 +1684,7 @@ bool BinaryFunction::scanExternalRefs() {
         BC.UndefinedSymbols.insert(EndLabel);
   }
 
-  clearList(Relocations);
+  clearList(Relocations);   // 这个为什么要清楚掉？
   clearList(ExternallyReferencedOffsets);
 
   if (Success && BC.HasRelocations)

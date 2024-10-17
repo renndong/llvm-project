@@ -2909,6 +2909,8 @@ void RewriteInstance::handleRelocation(const SectionRef &RelocatedSection,
     LLVM_DEBUG(dbgs() << "BOLT-DEBUG: ignoring relocation from data to data\n");
 }
 
+// selectFunctionsToProcess 根据一定的策略，选择需要优化的函数，并将不需要优化的函数标记为
+// ignore
 void RewriteInstance::selectFunctionsToProcess() {
   // Extend the list of functions to process or skip from a file.
   auto populateFunctionNames = [](cl::opt<std::string> &FunctionNamesFile,
@@ -2965,7 +2967,7 @@ void RewriteInstance::selectFunctionsToProcess() {
 
   StringSet<> ReorderFunctionsUserSet;
   StringSet<> ReorderFunctionsLTOCommonSet;
-  if (opts::ReorderFunctions == ReorderFunctions::RT_USER) {
+  if (opts::ReorderFunctions == ReorderFunctions::RT_USER) { // --function-order=<string> 用户指定函数的排列
     std::vector<std::string> FunctionNames;
     BC->logBOLTErrorsAndQuitOnFatal(
         ReorderFunctions::readFunctionOrderFile(FunctionNames));
@@ -2977,7 +2979,7 @@ void RewriteInstance::selectFunctionsToProcess() {
   }
 
   uint64_t NumFunctionsToProcess = 0;
-  auto mustSkip = [&](const BinaryFunction &Function) {
+  auto mustSkip = [&](const BinaryFunction &Function) { // 超过最大处理数量，或者用户指定跳过的函数，必须跳过
     if (opts::MaxFunctions.getNumOccurrences() &&
         NumFunctionsToProcess >= opts::MaxFunctions)
       return true;
@@ -3009,7 +3011,7 @@ void RewriteInstance::selectFunctionsToProcess() {
 
     if (opts::Lite) {
       // Forcibly include functions specified in the -function-order file.
-      if (opts::ReorderFunctions == ReorderFunctions::RT_USER) {
+      if (opts::ReorderFunctions == ReorderFunctions::RT_USER) {  // 函数在-function-order指定的文件中，一定处理
         for (const StringRef Name : Function.getNames())
           if (ReorderFunctionsUserSet.contains(Name))
             return true;
@@ -3019,10 +3021,10 @@ void RewriteInstance::selectFunctionsToProcess() {
               return true;
       }
 
-      if (ProfileReader && !ProfileReader->mayHaveProfileData(Function))
+      if (ProfileReader && !ProfileReader->mayHaveProfileData(Function)) // 没有profile，不处理
         return false;
 
-      if (Function.getKnownExecutionCount() < LiteThresholdExecCount)
+      if (Function.getKnownExecutionCount() < LiteThresholdExecCount) // 低于阈值，不处理
         return false;
     }
 
@@ -3254,7 +3256,7 @@ void RewriteInstance::disassembleFunctions() {
     // Offset of the function in the file.
     const auto *FileBegin =
         reinterpret_cast<const uint8_t *>(InputFile->getData().data());
-    Function.setFileOffset(FunctionData->begin() - FileBegin);
+    Function.setFileOffset(FunctionData->begin() - FileBegin);  // 通过buf的地址计算函数在文件中的偏移，裸指针操作
 
     if (!shouldDisassemble(Function)) {
       NamedRegionTimer T("scan", "scan functions", "buildfuncs",

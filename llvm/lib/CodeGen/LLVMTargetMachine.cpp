@@ -107,6 +107,7 @@ LLVMTargetMachine::getTargetTransformInfo(const Function &F) const {
   return TargetTransformInfo(BasicTTIImpl(this, F));
 }
 
+// addPassesToGenerateCode 添加代码生成的相关Pass，包括指令选择，寄存器分配
 /// addPassesToX helper drives creation and initialization of TargetPassConfig.
 static TargetPassConfig *
 addPassesToGenerateCode(LLVMTargetMachine &TM, PassManagerBase &PM,
