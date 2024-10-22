@@ -848,6 +848,7 @@ static void preserveFakeUses(BasicBlock::iterator Begin,
     Inst->moveBefore(*Inst->getParent(), I);
 }
 
+// 构建SelectionDAG，然后调用CodeGenAndEmitDAG进行指令选择
 void SelectionDAGISel::SelectBasicBlock(BasicBlock::const_iterator Begin,
                                         BasicBlock::const_iterator End,
                                         bool &HadTailCall) {
@@ -911,6 +912,9 @@ void SelectionDAGISel::ComputeLiveOutVRegInfo() {
   } while (!Worklist.empty());
 }
 
+// 执行数据类型合法化和指令合法化以及combine，合法化完成后调用DoInstructionSelection
+// 进行真正的指令选择
+// 这里看代码数据合法化(LegalizeType)进行了两遍，但是指令合法化(Legalize)只进行了一遍？
 void SelectionDAGISel::CodeGenAndEmitDAG() {
   StringRef GroupName = "sdag";
   StringRef GroupDescription = "Instruction Selection and Scheduling";
@@ -1251,6 +1255,11 @@ int SelectionDAGISel::getUninvalidatedNodeId(SDNode *N) {
   return Id;
 }
 
+// DoInstructionSelection 指令选择的核心逻辑，以逆拓扑序遍历构建好的SelectionDAG，
+// 在每个SDNode上调用Select方法完成每个节点的指令选择，Select作为一个纯虚方法会有具体
+// 的后端进行实现。每个后端中Select又会调用回SelectionDAGISel::SelectCodeCommon
+// 方法，使用其公有逻辑完成MatcherTable的匹配。
+// 注意SelectCodeCommon方法的调用在相关后端生成的xxxGenDAGISel.inc中
 void SelectionDAGISel::DoInstructionSelection() {
   LLVM_DEBUG(dbgs() << "===== Instruction selection begins: "
                     << printMBBReference(*FuncInfo->MBB) << " '"
