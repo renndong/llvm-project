@@ -645,8 +645,17 @@ InstructionCost RISCVTTIImpl::getSlideCost(FixedVectorType *Tp,
   if (!isMaskedSlidePair(Mask, NumElts, SrcInfo))
     return InstructionCost::getInvalid();
 
-  if (SrcInfo[1].second == 0)
+  if ((SrcInfo[0].second > 0 && SrcInfo[1].second < 0) ||
+      SrcInfo[1].second == 0)
     std::swap(SrcInfo[0], SrcInfo[1]);
+
+  if (ST->hasStdExtZvzip()) {
+    unsigned Factor;
+    if (TLI->isPairEven(SrcInfo, Mask, Factor) && Factor == 1)
+      return getRISCVInstructionCost(RISCV::VPAIRE_VV, LT.second, CostKind);
+    if (TLI->isPairOdd(SrcInfo, Mask, Factor) && Factor == 1)
+      return getRISCVInstructionCost(RISCV::VPAIRO_VV, LT.second, CostKind);
+  }
 
   InstructionCost FirstSlideCost = 0;
   if (SrcInfo[0].second != 0) {
@@ -671,6 +680,26 @@ InstructionCost RISCVTTIImpl::getSlideCost(FixedVectorType *Tp,
       VectorType::get(IntegerType::getInt1Ty(Tp->getContext()), EC);
   InstructionCost MaskCost = getConstantPoolLoadCost(MaskTy, CostKind);
   return FirstSlideCost + SecondSlideCost + MaskCost;
+}
+
+/// Return true if \p Mask is a two-way interleave that can be lowered with
+/// vzip.vv. \p NumInputElts is the total number of elements available from the
+/// shuffle inputs. The lowering requires at least one start index to be zero
+/// and both start indexes to be aligned to a half-vector boundary.
+static bool isLegalZvzipInterleaveMask(ArrayRef<int> Mask, unsigned NumInputElts,
+                                    MVT VT, const RISCVSubtarget &ST,
+                                    const RISCVTargetLowering &TLI) {
+  if (!ST.hasStdExtZvzip() || !TLI.isLegalVTForZvzipInterleavedOperand(VT))
+    return false;
+
+  SmallVector<unsigned, 2> StartIndexes;
+  if (!ShuffleVectorInst::isInterleaveMask(Mask, 2, NumInputElts, StartIndexes))
+    return false;
+
+  unsigned HalfNumElts = Mask.size() / 2;
+  return (StartIndexes[0] == 0 || StartIndexes[1] == 0) &&
+         StartIndexes[0] % HalfNumElts == 0 &&
+         StartIndexes[1] % HalfNumElts == 0;
 }
 
 InstructionCost
@@ -711,6 +740,10 @@ RISCVTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, VectorType *DstTy,
     case TTI::SK_PermuteSingleSrc: {
       if (Mask.size() >= 2) {
         MVT EltTp = LT.second.getVectorElementType();
+        if (isLegalZvzipInterleaveMask(Mask, Mask.size(), LT.second, *ST, *TLI))
+          return LT.first *
+                 getRISCVInstructionCost(RISCV::VZIP_VV, LT.second, CostKind);
+
         // If the size of the element is < ELEN then shuffles of interleaves and
         // deinterleaves of 2 vectors can be lowered into the following
         // sequences
@@ -732,6 +765,19 @@ RISCVTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, VectorType *DstTy,
                                                         LT.second, CostKind);
           }
         }
+
+        unsigned Index;
+        if (ST->hasStdExtZvzip() &&
+            ShuffleVectorInst::isDeInterleaveMaskOfFactor(Mask, 2, Index)) {
+          MVT DestTy = LT.second.getHalfNumVectorElementsVT();
+          if (DestTy.isFixedLengthVector() &&
+              TLI->isLegalVTForZvzipDeinterleavedOperand(DestTy)) {
+            unsigned Opcode = Index == 0 ? RISCV::VUNZIPE_V : RISCV::VUNZIPO_V;
+            return LT.first *
+                   getRISCVInstructionCost(Opcode, LT.second, CostKind);
+          }
+        }
+
         int SubVectorSize;
         if (LT.second.getScalarSizeInBits() != 1 &&
             isRepeatedConcatMask(Mask, SubVectorSize)) {
@@ -779,6 +825,10 @@ RISCVTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, VectorType *DstTy,
       if (InstructionCost SlideCost = getSlideCost(FVTp, Mask, CostKind);
           SlideCost.isValid())
         return SlideCost;
+
+      if (isLegalZvzipInterleaveMask(Mask, Mask.size() * 2, LT.second, *ST, *TLI))
+        return LT.first *
+               getRISCVInstructionCost(RISCV::VZIP_VV, LT.second, CostKind);
 
       // 2 x (vrgather + cost of generating the mask constant) + cost of mask
       // register for the second vrgather. We model this for an unknown
@@ -1808,6 +1858,57 @@ RISCVTTIImpl::getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
                                     ValLT.second, CostKind);
     return Cost;
   }
+  case Intrinsic::vector_interleave2:
+  case Intrinsic::vector_deinterleave2: {
+    if (!ST->hasStdExtZvzip())
+      break;
+
+    bool IsInterleave = ICA.getID() == Intrinsic::vector_interleave2;
+    Type *InterleavedTy = IsInterleave ? RetTy : ICA.getArgTypes().front();
+    // If any deinterleaved operand of interleave2 is undef, it may not match
+    // a zvzip instruction.
+    if (IsInterleave && !ICA.isTypeBasedOnly() &&
+        any_of(ICA.getArgs(),
+               [](const Value *Arg) { return isa<UndefValue>(Arg); }))
+      break;
+    if (InterleavedTy->getScalarSizeInBits() == 1)
+      return InstructionCost::getInvalid();
+
+    if (auto *InterleavedFVT = dyn_cast<FixedVectorType>(InterleavedTy)) {
+      if (IsInterleave) {
+        unsigned VF = InterleavedFVT->getNumElements() / 2;
+        return getShuffleCost(TTI::SK_PermuteSingleSrc, InterleavedFVT,
+                              InterleavedFVT, createInterleaveMask(VF, 2),
+                              CostKind, 0, nullptr);
+      }
+
+      auto *DeinterleavedFVT =
+          FixedVectorType::getHalfElementsVectorType(InterleavedFVT);
+      unsigned VF = DeinterleavedFVT->getNumElements();
+      InstructionCost Cost = 0;
+      for (unsigned Start = 0; Start != 2; ++Start)
+        Cost += getShuffleCost(TTI::SK_PermuteSingleSrc, DeinterleavedFVT,
+                               InterleavedFVT, createStrideMask(Start, 2, VF),
+                               CostKind, 0, nullptr);
+      return Cost;
+    }
+
+    auto LT = getTypeLegalizationCost(InterleavedTy);
+    if (!LT.second.isScalableVector())
+      break;
+    MVT InterleavedVT = LT.second;
+    MVT DeinterleavedVT = InterleavedVT.getHalfNumVectorElementsVT();
+    if (TLI->isLegalVTForZvzipDeinterleavedOperand(DeinterleavedVT) &&
+        TLI->isLegalVTForZvzipInterleavedOperand(InterleavedVT)) {
+      return IsInterleave
+                 ? LT.first * getRISCVInstructionCost(RISCV::VZIP_VV,
+                                                      InterleavedVT, CostKind)
+                 : LT.first * getRISCVInstructionCost(
+                                  {RISCV::VUNZIPE_V, RISCV::VUNZIPO_V},
+                                  InterleavedVT, CostKind);
+    }
+    break;
+  }
   }
 
   if (ST->hasVInstructions() && RetTy->isVectorTy()) {
@@ -2360,7 +2461,7 @@ InstructionCost RISCVTTIImpl::getMemoryOpCost(unsigned Opcode, Type *Src,
     if (Src->isVectorTy() && LT.second.isVector() &&
         TypeSize::isKnownLT(DL.getTypeStoreSizeInBits(Src),
                             LT.second.getSizeInBits()))
-        return Cost;
+      return Cost;
 
     return BaseT::getMemoryOpCost(Opcode, Src, Alignment, AddressSpace,
                                   CostKind, OpInfo, I);
@@ -2593,8 +2694,8 @@ InstructionCost RISCVTTIImpl::getVectorInstrCost(
   // Mask vector extract/insert is expanded via e8.
   if (Val->getScalarSizeInBits() == 1) {
     VectorType *WideTy =
-      VectorType::get(IntegerType::get(Val->getContext(), 8),
-                      cast<VectorType>(Val)->getElementCount());
+        VectorType::get(IntegerType::get(Val->getContext(), 8),
+                        cast<VectorType>(Val)->getElementCount());
     if (Opcode == Instruction::ExtractElement) {
       InstructionCost ExtendCost
         = getCastInstrCost(Instruction::ZExt, WideTy, Val,
@@ -3348,7 +3449,7 @@ unsigned RISCVTTIImpl::getMaximumVF(unsigned ElemWidth, unsigned Opcode) const {
   // lane type, but we don't have enough information to do that without
   // some additional plumbing which hasn't been justified yet.
   TypeSize RegWidth =
-    getRegisterBitWidth(TargetTransformInfo::RGK_FixedWidthVector);
+      getRegisterBitWidth(TargetTransformInfo::RGK_FixedWidthVector);
   // If no vector registers, or absurd element widths, disable
   // vectorization by returning 1.
   return std::max<unsigned>(1U, RegWidth.getFixedValue() / ElemWidth);

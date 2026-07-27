@@ -392,6 +392,14 @@ public:
 
   bool isLegalElementTypeForRVV(EVT ScalarTy) const;
 
+  bool isLegalVTForZvzipDeinterleavedOperand(MVT VT) const;
+  bool isLegalVTForZvzipInterleavedOperand(MVT VT) const;
+
+  bool isPairEven(const std::array<std::pair<int, int>, 2> &SrcInfo,
+                  ArrayRef<int> Mask, unsigned &Factor) const;
+  bool isPairOdd(const std::array<std::pair<int, int>, 2> &SrcInfo,
+                 ArrayRef<int> Mask, unsigned &Factor) const;
+
   bool shouldConvertFpToSat(unsigned Op, EVT FPVT, EVT VT) const override;
 
   unsigned getJumpTableEncoding() const override;
