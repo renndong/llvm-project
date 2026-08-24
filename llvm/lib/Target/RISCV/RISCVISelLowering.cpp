@@ -1123,13 +1123,8 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
                          Legal);
 
       if (Subtarget.hasStdExtZvabd()) {
-        setOperationAction(ISD::ABS, VT, Legal);
-        // Only SEW=8/16 are supported in Zvabd.
-        if (VT.getVectorElementType() == MVT::i8 ||
-            VT.getVectorElementType() == MVT::i16)
-          setOperationAction({ISD::ABDS, ISD::ABDU}, VT, Legal);
-        else
-          setOperationAction({ISD::ABDS, ISD::ABDU}, VT, Custom);
+        setOperationAction(ISD::ABS, VT, Custom);
+        setOperationAction({ISD::ABDS, ISD::ABDU}, VT, Legal);
       } else
         setOperationAction({ISD::ABDS, ISD::ABDU}, VT, Custom);
 
@@ -9544,10 +9539,7 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
   case ISD::ABDS:
   case ISD::ABDU: {
     EVT VT = Op->getValueType(0);
-    // Only SEW=8/16 are supported in Zvabd.
-    if (Subtarget.hasStdExtZvabd() && VT.isVector() &&
-        (VT.getVectorElementType() == MVT::i8 ||
-         VT.getVectorElementType() == MVT::i16))
+    if (Subtarget.hasStdExtZvabd() && VT.isVector())
       return lowerToScalableOp(Op, DAG);
 
     SDLoc dl(Op);
@@ -14993,22 +14985,28 @@ SDValue RISCVTargetLowering::lowerVectorStrictFSetcc(SDValue Op,
   return Res;
 }
 
-// Lower vector ABS to smax(X, sub(0, X)).
+// Lower vector ABS to ABDS(X, 0) when Zvabd is available, or otherwise to
+// smax(X, sub(0, X)).
 SDValue RISCVTargetLowering::lowerABS(SDValue Op, SelectionDAG &DAG) const {
   SDLoc DL(Op);
   MVT VT = Op.getSimpleValueType();
   SDValue X = Op.getOperand(0);
 
-  assert(VT.isFixedLengthVector() && "Unexpected type for ISD::ABS");
-
-  MVT ContainerVT = getContainerForFixedLengthVector(VT);
-  X = convertToScalableVector(ContainerVT, X, DAG, Subtarget);
+  assert(VT.isVector() && "Unexpected type for ISD::ABS");
+  MVT ContainerVT = VT;
+  if (VT.isFixedLengthVector()) {
+    ContainerVT = getContainerForFixedLengthVector(VT);
+    X = convertToScalableVector(ContainerVT, X, DAG, Subtarget);
+  }
 
   auto [Mask, VL] = getDefaultVLOps(VT, ContainerVT, DL, DAG, Subtarget);
 
   SDValue Result;
   if (Subtarget.hasStdExtZvabd()) {
-    Result = DAG.getNode(RISCVISD::ABS_VL, DL, ContainerVT, X,
+    SDValue SplatZero = DAG.getNode(
+        RISCVISD::VMV_V_X_VL, DL, ContainerVT, DAG.getUNDEF(ContainerVT),
+        DAG.getConstant(0, DL, Subtarget.getXLenVT()), VL);
+    Result = DAG.getNode(RISCVISD::ABDS_VL, DL, ContainerVT, X, SplatZero,
                          DAG.getUNDEF(ContainerVT), Mask, VL);
   } else {
     SDValue SplatZero = DAG.getNode(
@@ -15019,7 +15017,10 @@ SDValue RISCVTargetLowering::lowerABS(SDValue Op, SelectionDAG &DAG) const {
     Result = DAG.getNode(RISCVISD::SMAX_VL, DL, ContainerVT, X, NegX,
                          DAG.getUNDEF(ContainerVT), Mask, VL);
   }
-  return convertFromScalableVector(VT, Result, DAG, Subtarget);
+
+  if (VT.isFixedLengthVector())
+    return convertFromScalableVector(VT, Result, DAG, Subtarget);
+  return Result;
 }
 
 SDValue RISCVTargetLowering::lowerToScalableOp(SDValue Op,

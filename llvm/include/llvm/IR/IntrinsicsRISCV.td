@@ -826,7 +826,7 @@ let TargetPrefix = "riscv" in {
     let VLOperand = 3;
   }
   // Masked Widening Vector Multiply-Add operations, its first operand can not be undef.
-  // Input: (vector_in, vector_in/scalar, vector_in, mask, vl, policy
+  // Input: (vector_in, vector_in/scalar, vector_in, mask, vl, policy)
   class RISCVTernaryWideMasked
         : DefaultAttrsIntrinsic< [llvm_anyvector_ty],
                      [LLVMMatchType<0>, llvm_any_ty, llvm_anyvector_ty,
@@ -834,6 +834,35 @@ let TargetPrefix = "riscv" in {
                       llvm_anyint_ty, LLVMMatchType<3>],
                      [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
     let ScalarOperand = 1;
+    let VLOperand = 4;
+  }
+  // Unmasked widening ternary operations with a wide accumulator as the first
+  // operand. The second operand is a narrow vector and the third operand is a
+  // narrow vector or scalar. The accumulator cannot be undef. This is similar
+  // with `RISCVTernaryWideUnMasked` but with reverse order of the second and
+  // third operand.
+  // Input: (accumulator, vector_in, vector_in/scalar, vl, policy)
+  class RISCVTernaryWideAABXUnMasked
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, llvm_any_ty,
+                     llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 3;
+  }
+  // Masked widening ternary operations with a wide accumulator as the first
+  // operand. The second operand is a narrow vector and the third operand is a
+  // narrow vector or scalar. The accumulator cannot be undef. This is similar
+  // with `RISCVTernaryWideMasked` but with reverse order of the second and
+  // third operand.
+  // Input: (accumulator, vector_in, vector_in/scalar, mask, vl, policy)
+  class RISCVTernaryWideAABXMasked
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, llvm_any_ty,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                     llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
     let VLOperand = 4;
   }
   // UnMasked Widening Vector Multiply-Add operations, its first operand can not be undef.
@@ -1308,6 +1337,10 @@ let TargetPrefix = "riscv" in {
   multiclass RISCVTernaryWide {
     def "int_riscv_" # NAME : RISCVTernaryWideUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVTernaryWideMasked;
+  }
+  multiclass RISCVTernaryWideAABX {
+    def "int_riscv_" # NAME : RISCVTernaryWideAABXUnMasked;
+    def "int_riscv_" # NAME # "_mask" : RISCVTernaryWideAABXMasked;
   }
   multiclass RISCVTernaryWideRoundingMode {
     def "int_riscv_" # NAME : RISCVTernaryWideUnMaskedRoundingMode;
@@ -1933,11 +1966,10 @@ let TargetPrefix = "riscv" in {
 // Zvabd - Vector Absolute Difference
 //===----------------------------------------------------------------------===//
 let TargetPrefix = "riscv" in {
-  defm vabs    : RISCVUnaryAA;
-  defm vabd    : RISCVBinaryAAA;
-  defm vabdu   : RISCVBinaryAAA;
-  defm vwabda  : RISCVTernaryWide;
-  defm vwabdau : RISCVTernaryWide;
+  defm vabd    : RISCVBinaryAAX;
+  defm vabdu   : RISCVBinaryAAX;
+  defm vwabda  : RISCVTernaryWideAABX;
+  defm vwabdau : RISCVTernaryWideAABX;
 } // TargetPrefix = "riscv"
 
 // Zvzip - Reordering Structured Data in Vector Registers
